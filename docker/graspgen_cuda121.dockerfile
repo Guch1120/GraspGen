@@ -22,9 +22,11 @@ RUN pip install imageio pickle5 opencv-python python-fcl
 # Install pyrender
 RUN pip install pyrender==0.1.45 pyglet==2.1.6 && pip install PyOpenGL==3.1.5
 
+WORKDIR /code
+
 # Install pointnet2 modules
-COPY pointnet2_ops pointnet2_ops
-RUN pip install ./pointnet2_ops
+COPY pointnet2_ops /code/pointnet2_ops
+RUN pip install ./pointnet2_ops --no-build-isolation
 
 # Diffusion dependencies
 RUN pip install diffusers==0.11.1 timm==1.0.15
@@ -57,4 +59,5 @@ RUN cd /install/Manifold/build && cmake .. -DCMAKE_BUILD_TYPE=Release
 RUN cd /install/Manifold/build && make
 ENV PATH="${PATH}:/install/Manifold/build/"
 
-WORKDIR /code/
+# Set final workdir
+WORKDIR /code
