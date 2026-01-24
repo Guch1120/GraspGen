@@ -61,3 +61,4 @@ ENV PATH="${PATH}:/install/Manifold/build/"
 
 # Set final workdir
 WORKDIR /code
+RUN echo "export PS1='\[\e[1;36m\]\u@\h\[\e[0m\]:\[\e[1;34m\]\w\[\e[0m\]\$ '" >> /root/.bashrc
