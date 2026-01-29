@@ -111,7 +111,33 @@ export CC=/usr/bin/g++ && export CXX=/usr/bin/g++ && export CUDAHOSTCXX=/usr/bin
 ```
 ## チェックポイントのダウンロード
 
-チェックポイントは [HuggingFace](https://huggingface.co/adithyamurali/GraspGenModels) からダウンロードできます：
+チェックポイントは [HuggingFace](https://huggingface.co/adithyamurali/GraspGenModels) からダウンロードできます \
+git lfsがインストールされていないと必要なものがすべて入らないので，確認してからgit cloneするように．
+
+```
+git lfs version
+```
+これで何らかのバージョンが表示されればOK. \
+<details>
+<summmary>インストールされていないとき</summmary>
+
+```
+curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | sudo bash
+```
+```
+sudo apt-get update
+```
+```
+sudo apt-get install git-lfs
+```
+```
+git lfs install
+```
+```
+git lfs version
+```
+</details>
+
 ```
 git clone https://huggingface.co/adithyamurali/GraspGenModels
 ```

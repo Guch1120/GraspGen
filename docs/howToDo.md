@@ -26,9 +26,8 @@ meshcat-server
 ダウンロードしたモデルをマウントして、Docker コンテナを起動します。
 
 ```bash
-cd graspGen
 # プロジェクトルートで実行
-bash docker/run.sh . --models <path_to_models_repo>
+docker compose -f docker/docker-compose.yml run --rm graspgen
 ```
 
 ## 4. 推論デモの実行
@@ -38,26 +37,26 @@ bash docker/run.sh . --models <path_to_models_repo>
 ### A. オブジェクト点群 (JSON) の場合
 ```bash
 python scripts/demo_object_pc.py \
-    --sample_data_dir /models/sample_data/real_object_pc \
-    --gripper_config /models/checkpoints/graspgen_robotiq_2f_140.yml
+    --sample_data_dir GraspGenModels/sample_data/real_object_pc \
+    --gripper_config GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml
 ```
 
 ### B. オブジェクトメッシュ (OBJ, STL等) の場合
 ```bash
 python scripts/demo_object_mesh.py \
-    --mesh_file /models/sample_data/meshes/box.obj \
-    --gripper_config /models/checkpoints/graspgen_robotiq_2f_140.yml
+    --mesh_file GraspGenModels/sample_data/meshes/box.obj \
+    --gripper_config GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml
 ```
 
 ### C. シーン全体の点群の場合
 ```bash
 python scripts/demo_scene_pc.py \
-    --sample_data_dir /models/sample_data/real_scene_pc \
-    --gripper_config /models/checkpoints/graspgen_robotiq_2f_140.yml
+    --sample_data_dir GraspGenModels/sample_data/real_scene_pc \
+    --gripper_config GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml
 ```
 
 ## 補足
-- **グリッパーの変更**: `--gripper_config` の引数を `/models/checkpoints/` 内にある他の `.yml` ファイル（例: `graspgen_franka_panda.yml`）に変更することで、異なるロボットハンドでの推論が可能です。
+- **グリッパーの変更**: `--gripper_config` の引数を `/GraspGenModels/checkpoints/` 内にある他の `.yml` ファイル（例: `graspgen_franka_panda.yml`）に変更することで、異なるロボットハンドでの推論が可能です。
 - **詳細なオプション**: 各スクリプトに `--help` を付けて実行することで、閾値 (`--grasp_threshold`) や生成数 (`--num_grasps`) などの詳細設定を確認できます。
 ## 5. 実機導入へのステップ (RealSense + YOLOv8)
 
