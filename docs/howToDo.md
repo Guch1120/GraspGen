@@ -11,52 +11,86 @@ git clone https://huggingface.co/adithyamurali/GraspGenModels <path_to_models_re
 ```
 ※ `<path_to_models_repo>` は任意のローカルパスに置き換えてください。
 
-## 2. MeshCat サーバーの起動 (可視化用)
-
-推論結果をブラウザで見るために、別のターミナルで MeshCat サーバーを起動します。
-
-```bash
-# pip install meshcat が必要です
-meshcat-server
-```
-起動後、ブラウザで `http://localhost:7001` (または表示されたURL) を開いておきます。
-
-## 3. Docker コンテナの起動
+## 2. Docker コンテナの起動
 
 ダウンロードしたモデルをマウントして、Docker コンテナを起動します。
+プロジェクトルートで以下のコマンドを実行してください（`docker-compose` ではなく `run.sh` を使用します）。
 
 ```bash
-# プロジェクトルートで実行
-docker compose -f docker/docker-compose.yml run --rm graspgen
+# クローンした GraspGen のルートディレクトリで実行
+# <path_to_models_repo> はモデルをクローンしたディレクトリへのパス
+bash docker/run.sh . --models GraspGenModels/
 ```
 
-## 4. 推論デモの実行
+実行後、コンテナ内のシェルに入ります。
 
-コンテナ内に入ったら、目的のデータ形式に合わせて以下のコマンドを実行します。
+## 3. MeshCat サーバーの起動 (可視化用)
+
+コンテナに入ったら、まずは可視化用の MeshCat サーバーを起動します。
+
+```bash
+meshcat-server
+```
+起動後、ホスト側のブラウザで `http://localhost:7000` (または表示されたURL) を開いておきます。
+**このターミナルは MeshCat サーバー専用としてそのままにしておきます。**
+
+## 4. 推論デモの実行 (別ターミナル)
+
+MeshCat サーバーを起動したまま、**別のターミナル**を開き、起動中のコンテナに入って推論を実行します。
+
+1. **コンテナIDの確認**:
+   ```bash
+   docker ps
+   # "graspgen:latest" イメージのコンテナID (例: a1b2c3d4e5) を確認
+   ```
+
+2. **コンテナへの接続**:
+   ```bash
+   docker exec -it <コンテナID> bash
+   ```
+
+3. **推論スクリプトの実行**:
+   コンテナ内で以下のコマンドを実行します。
 
 ### A. オブジェクト点群 (JSON) の場合
 ```bash
 python scripts/demo_object_pc.py \
-    --sample_data_dir GraspGenModels/sample_data/real_object_pc \
-    --gripper_config GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml
+    --sample_data_dir /models/sample_data/real_object_pc \
+    --gripper_config /models/checkpoints/graspgen_robotiq_2f_140.yml
 ```
 
 ### B. オブジェクトメッシュ (OBJ, STL等) の場合
 ```bash
 python scripts/demo_object_mesh.py \
-    --mesh_file GraspGenModels/sample_data/meshes/box.obj \
-    --gripper_config GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml
+    --mesh_file /models/sample_data/meshes/box.obj \
+    --gripper_config /models/checkpoints/graspgen_robotiq_2f_140.yml
 ```
 
 ### C. シーン全体の点群の場合
 ```bash
 python scripts/demo_scene_pc.py \
-    --sample_data_dir GraspGenModels/sample_data/real_scene_pc \
-    --gripper_config GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml
+    --sample_data_dir /models/sample_data/real_scene_pc \
+    --gripper_config /models/checkpoints/graspgen_robotiq_2f_140.yml
 ```
 
+### D. 実機データでの推論 (RealSense + YOLOv8)
+実機で取得した点群データトピックに対して推論を実行します。
+```bash
+export FASTRTPS_DEFAULT_PROFILES_FILE=/code/fastdds_udp.xml
+nano ~/.bashrc
+# .bashrc に追加して読み込みまでしておくと今後楽
+```
+```bash
+# 推論ノードの実行
+python3 scripts/ros_inference.py --ros-args \
+    -p scene_topic:=/camera/camera/depth/color/points \
+    -p object_topic:=/yolov8_seg_node/result_cloud
+```
+
+
 ## 補足
-- **グリッパーの変更**: `--gripper_config` の引数を `/GraspGenModels/checkpoints/` 内にある他の `.yml` ファイル（例: `graspgen_franka_panda.yml`）に変更することで、異なるロボットハンドでの推論が可能です。
+- **マウントパスについて**: `run.sh` を使用した場合、モデルディレクトリは `/models` にマウントされます。そのため、スクリプトの引数も `/models/...` から始まるパスを指定してください。
+- **グリッパーの変更**: `--gripper_config` の引数を `/models/checkpoints/` 内にある他の `.yml` ファイル（例: `graspgen_franka_panda.yml`）に変更することで、異なるロボットハンドでの推論が可能です。
 - **詳細なオプション**: 各スクリプトに `--help` を付けて実行することで、閾値 (`--grasp_threshold`) や生成数 (`--num_grasps`) などの詳細設定を確認できます。
 ## 5. 実機導入へのステップ (RealSense + YOLOv8)
 

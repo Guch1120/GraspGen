@@ -119,19 +119,7 @@ def read_points(cloud, field_names=None, skip_nans=False, uvs=[]):
             # Maybe row_step padding?
              pass 
 
-        # We can use striding
-        # X
-        x_col = raw_data[x_offset::point_step][:num_points]
-        x_floats = x_col.view(dtype=np.float32)
-        # But we need 4 bytes. If point_step > 4, we need to slice carefully.
-        # It's cleaner to view the whole buffer as a struct array if possible, but padding varies.
-        
-        # Safer low-level approach:
-        # Create an iterator? No, too slow for python.
-        
-        # Best approach: byte-aligned slice + view
-        # Ensure we don't go out of bounds
-        end_idx = num_points * point_step
+
         
         # X
         # Create a buffer of just the X bytes
@@ -243,12 +231,23 @@ class GraspInferenceNode(Node):
 
         # --- MeshCat ---
         self.get_logger().info("Initializing MeshCat...")
-        self.vis = create_visualizer() # Starts at port 7001 by default
+        # Check environment variable or parameter for ZMQ URL
+        zmq_url = os.environ.get("MESHCAT_ZMQ_URL", "tcp://127.0.0.1:6000")
+        self.get_logger().info(f"Connecting to MeshCat at {zmq_url}")
+        
+        # Override create_visualizer to support custom URL
+        self.vis = self.create_custom_visualizer(zmq_url) 
         self.vis.delete() # Clear
         
         # --- State ---
         self.latest_scene_pc = None
         self.latest_scene_color = None
+
+    def create_custom_visualizer(self, zmq_url):
+        import meshcat
+        self.get_logger().info(f"Waiting for meshcat server at {zmq_url}...")
+        vis = meshcat.Visualizer(zmq_url=zmq_url)
+        return vis
 
     def listener_callback_scene(self, msg):
         """Buffer the latest scene point cloud for collision checking."""
@@ -304,6 +303,9 @@ class GraspInferenceNode(Node):
              obj_pc_torch, obj_c_torch
         )
         obj_pc_clean_np = obj_pc_clean.cpu().numpy()
+        
+        # Ensure tensor is on CUDA for inference
+        obj_pc_clean = obj_pc_clean.cuda()
         
         # Update MeshCat visualization
         visualize_pointcloud(self.vis, "pc_object", obj_pc_clean_np, None, size=0.005)
