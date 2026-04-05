@@ -30,9 +30,6 @@
 
 GraspGen is a modular framework for diffusion-based 6-DOF robotic grasp generation that scales across diverse settings: 1) **embodiments** - with 3 distinct gripper types (industrial pinch gripper, suction) 2) **observability** - robustness to partial vs. complete 3D point clouds and 3) **complexity** - grasping single-object vs. clutter. We also introduce a novel and performant on-generator training recipe for the grasp discriminator, which scores and ranks the generated grasps. GraspGen outperforms prior methods in real and sim (SOTA performance on the FetchBench grasping benchmark, 17% improvement) while being performant (21X less memory) and realtime (20 Hz before TensorRT). We release the data generation, data formats as well as the training and inference infrastructure in this repo.
 
-**Key Results**
-
-
 <img src="fig/radar.png" width="200" height="250" title="readme1"> <img src="fig/3.gif" width="350" height="250" title="readme2"> <img src="fig/2.gif" width="350" height="250" title="readme3"> <img src="fig/1_fast.gif" width="300" height="250" title="readme4">
 
 ## 💡 Contents
@@ -40,20 +37,31 @@ GraspGen is a modular framework for diffusion-based 6-DOF robotic grasp generati
 1. [Release News](#release-news)
 2. [Future Features](#future-features-on-the-roadmap)
 3. [Installation](#installation)
-   - [Docker Installation](#installation-with-docker)
+   - [Docker](#installation-with-docker)
    - [Pip Installation](#installation-with-pip)
+   - [uv](#installation-with-uv)
+   - [Client-Server](#zmq-server)
+   - [MCP (LLM Tool-Calling)](#mcp-llm-tool-calling)
 4. [Download Model Checkpoints](#download-checkpoints)
 5. [Inference Demos](#inference-demos)
 6. [Dataset](#dataset)
 7. [Training with Existing Datasets](#training-with-existing-datasets)
 8. [Bring Your Own Datasets (BYOD) - Training + Data Generation for new grippers and objects](#training--data-generation-for-new-objects-and-grippers)
 9. [GraspGen Format and Conventions](#graspgen-conventions)
-10. [FAQ](#faq)
-11. [License](#license)
-12. [Citation](#citation)
-13. [Contact](#contact)
+10. [LLM Tool-calling with GraspGen](#llm-tool-calling-with-graspgen)
+11. [Omniverse and USD Support](#omniverse-and-usd-support)
+12. [FAQ](#faq)
+13. [License](#license)
+14. [Citation](#citation)
+15. [Contact](#contact)
 
 ## Release News
+
+- \[03/03/2026\] Added MCP for calling GraspGen as a tool by an LLM. See [mcp/](mcp/).
+
+- \[03/03/2026\] ZMQ-based server added to run GraspGen without any installation in your application. See [client-server/](client-server/)
+
+- \[02/18/2026\] Paper accepted to ICRA'26, see you in Vienna 🚀🇦🇹
 
 - \[10/28/2025\] Add feature of filtering out colliding grasps based on scene point cloud.
 
@@ -71,11 +79,19 @@ GraspGen is a modular framework for diffusion-based 6-DOF robotic grasp generati
 - ~~Data generation repo for antipodal grippers based on [Isaac Lab](https://isaac-sim.github.io/IsaacLab/main/index.html) (Note: [Data gen for suction grippers already released](grasp_gen/dataset/suction.py))~~
 - ~~Collision-filtering example~~
 - ~~Finetuning with real data**[Not planned anymore, lack of time]**~~
-- Infering grasp width based on raycasting
-- PTV3 backbone does not (yet) run on Cuda 12.8 due to a [dependency issue](https://github.com/Pointcept/PointTransformerV3/issues/159). If using Cuda 12.8, please use PointNet++ backbone for now until its resolved.
+- PTV3 backbone does not (yet) run on Cuda 12.8/Blackwell GPUs due to a [dependency issue](https://github.com/Pointcept/PointTransformerV3/issues/159). If using Cuda 12.8, please use PointNet++ backbone for now until its resolved.
 
 ## Installation
-For training, we recommend the docker installation. Pip installation has only been tested for inference.
+Choose your preferred installation method. For training, we recommend **docker**. For inference, **uv** is the fastest and easiest option. If you would like to run GraspGen as a standalone server (e.g. for tool-calling from an LLM agent or a remote robot client), see [client-server/README.md](client-server/README.md). We also added a MCP to call GraspGen with an LLM.
+
+**✅ All methods fully tested and working!**
+
+| Method | Use Case | Complexity | Speed | 
+|--------|----------|------------|-------|
+| **Docker** | Training + Inference | ⭐⭐⭐ Recommended for training | Slow |
+| **Pip** and **uv** | Inference | ⭐⭐ Recommended for inference | Fast |
+| **ZMQ Server** | Remote inference (no install needed on client) | ⭐ See [client-server/](client-server/) | Fast |
+| **MCP** | LLM tool-calling | ⭐ See [mcp/](mcp/) | Fast |
 
 ### Installation with Docker
 ```bash
@@ -86,29 +102,62 @@ bash docker/build.sh # This will take a while
 ### Installation with pip inside Conda/Python virtualenv
 **[Optional]** If you do not already have a conda env, first create one:
 ```bash
-conda create -n GraspGen python=3.10 && conda activate GraspGen
+conda create -n GraspGen python=3.10 -y && conda activate GraspGen
 ```
 **[Optional]** If you do not already have pytorch installed:
 ```bash
-pip install torch==2.1.0 torchvision==0.16.0 torch-cluster -f https://data.pyg.org/whl/torch-2.1.0+cu121.html
+pip install torch==2.1.0 torchvision==0.16.0 torch-cluster torch-scatter -f https://data.pyg.org/whl/torch-2.1.0+cu121.html
 ```
 Install with pip:
 ```bash
 # Clone repo and install
-git clone https://github.com/NVlabs/GraspGen.git
-cd GraspGen && pip install -e .
+git clone https://github.com/NVlabs/GraspGen.git && cd GraspGen && pip install -e .
 
-# Install PointNet dependency
-cd pointnet2_ops && pip install --no-build-isolation .
-
-# Install other dependencies
-pip install pyrender && pip install PyOpenGL==3.1.5 transformers tensordict pyrender diffusers==0.11.1 timm huggingface-hub==0.25.2 scene-synthesizer[recommend]
+# Install PointNet dependency (automated script handles CUDA environment)
+./install_pointnet.sh
 ```
 
-NOTE: When compiling `pointnet2_ops`, if you are facing issues such as finding CUDA runtime headers or missing C++ compiler, try to manually set the following before installing:
+**NOTE:** The `install_pointnet.sh` script automatically handles CUDA environment variables. Ensure you have CUDA runtime headers and a C++ compiler installed. You can also manually run it as follows:
 ```bash
-export CC=/usr/bin/g++ && export CXX=/usr/bin/g++ && export CUDAHOSTCXX=/usr/bin/g++ && export TORCH_CUDA_ARCH_LIST="8.6"
+export CC=/usr/bin/g++ && export CXX=/usr/bin/g++ && export CUDAHOSTCXX=/usr/bin/g++ && export TORCH_CUDA_ARCH_LIST="8.6" && cd pointnet2_ops && pip install --no-build-isolation .
 ```
+
+
+### Installation with uv 🚀
+uv installation is recommended if you would just like to run inference.
+
+**[Optional]** Install uv if not already installed:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc  # or restart terminal
+```
+
+**Cloning repo and installing:**
+```bash
+# Clone repo and setup everything
+git clone https://github.com/NVlabs/GraspGen.git && cd GraspGen
+
+# Create Python environment and install all dependencies
+uv python install 3.10 && uv venv --python 3.10 .venv && source .venv/bin/activate
+uv pip install -e .
+
+# Install PointNet dependency (automated script handles CUDA environment)
+./install_uv_pointnet.sh
+```
+
+To check if installation has succeeded, run the following test:
+```bash
+python tests/test_inference_installation.py
+```
+
+### ZMQ Server
+
+To run GraspGen as a standalone inference server that any client can query without installing the full stack, see [client-server/README.md](client-server/README.md).
+
+### MCP (LLM Tool-Calling)
+
+To enable LLMs to call GraspGen as a tool, see [mcp/README.md](mcp/README.md).
+
 ## Download Checkpoints
 
 The checkpoints can be downloaded from [HuggingFace](https://huggingface.co/adithyamurali/GraspGenModels):
@@ -123,8 +172,7 @@ We have added scripts for visualizing grasp predictions on real world point clou
 ### Prerequisites
 
 1. **Dataset:** Please [download checkpoints](#download-checkpoints) first - this will be the `<path_to_models_repo>` below.
-2. **MeshCat:** All the examples below are visualized on MeshCat in a browser. You can start a MeshCat server in a new terminal (in any environment, install with `pip install meshcat`) with the following command: `meshcat-server`. You can also just run a dedicated docker container in the background `bash docker/run_meshcat.sh`. Navigate to the corresponding url on the browser (it should be printed when you start the server) - the results will be visualized here.
-3. **Docker:** The first argument is the path to where you have locally cloned the GraspGen repository (always required). Use `--models` flag for the models directory. These will be mounted at `/code` and `/models` paths inside the container respectively. 
+2. **Docker:** The first argument is the path to where you have locally cloned the GraspGen repository (always required). Use `--models` flag for the models directory. These will be mounted at `/code` and `/models` paths inside the container respectively. 
 ```bash
 # For inference only
 bash docker/run.sh <path_to_graspgen_code> --models <path_to_models_repo>
@@ -138,9 +186,48 @@ cd /code/ && python scripts/demo_object_pc.py --sample_data_dir /models/sample_d
 <img src="fig/pc/1.png" width="240" height="200" title="objpc1"> <img src="fig/pc/2.png" width="240" height="200" title="objpc2"> <img src="fig/pc/3.png" width="240" height="200" title="objpc3"> <img src="fig/pc/4.png" width="200" height="200" title="objpc4"> <img src="fig/pc/5.png" width="240" height="200" title="objpc5"> <img src="fig/pc/6.png" width="200" height="200" title="objpc6">
 
 ### Predicting grasps for object meshes
+Supports `.obj`, `.stl`, `.ply`, and USD formats (`.usd`, `.usda`, `.usdc`, `.usdz`). USD files are loaded via [scene_synthesizer](https://github.com/NVlabs/scene_synthesizer).
 ```bash
 cd /code/ && python scripts/demo_object_mesh.py --mesh_file /models/sample_data/meshes/box.obj --mesh_scale 1.0 --gripper_config /models/checkpoints/graspgen_robotiq_2f_140.yml
 ```
+USD example:
+```bash
+cd /code/ && python scripts/demo_object_mesh.py --mesh_file /path/to/object.usd --mesh_scale 1.0 --gripper_config /models/checkpoints/graspgen_robotiq_2f_140.yml
+```
+
+**Producing a USD with the object, grasps (poses), and grasps_visualization (wireframes):**  
+Run the following from the GraspGen repo root (with `.venv` activated). Replace `GRIPPER_CONFIG` and `GRASPS_OUTPUT_USD` as needed. The result will have three entries under `/world`: the object mesh, `/world/grasps` (pose Xforms only), and `/world/grasps_visualization` (gripper wireframe at each pose, same format as viser).
+
+```bash
+# 1) Convert mesh to USD (object only). Add --light-blue for a light blue mesh in the USD.
+python scripts/convert_obj_to_usd.py --input assets/objects/box.obj --output assets/objects/box.usd
+
+# 2) Run GraspGen inference and save grasps to YAML
+python scripts/demo_object_mesh.py --mesh_file assets/objects/box.usd --mesh_scale 1.0 \
+  --gripper_config GRIPPER_CONFIG --output_file /tmp/box_grasps.yml --no-visualization --num_grasps 50
+
+# 3) Write grasps and grasps_visualization into the USD
+python scripts/save_grasps_to_usd.py --usd_file assets/objects/box.usd --grasps_yaml /tmp/box_grasps.yml \
+  --gripper_name robotiq_2f_140 --output GRASPS_OUTPUT_USD
+```
+
+Example with Robotiq checkpoint (set `GRIPPER_CONFIG` to your GraspGenModels path, e.g. `../GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml`):
+
+```bash
+python scripts/convert_obj_to_usd.py --input assets/objects/box.obj --output assets/objects/box.usd
+python scripts/demo_object_mesh.py --mesh_file assets/objects/box.usd --mesh_scale 1.0 \
+  --gripper_config ../GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml \
+  --output_file /tmp/box_grasps.yml --no-visualization --num_grasps 50
+python scripts/save_grasps_to_usd.py --usd_file assets/objects/box.usd --grasps_yaml /tmp/box_grasps.yml \
+  --gripper_name robotiq_2f_140 --output assets/objects/box_with_grasps.usd
+```
+
+To get a **light blue** box in the USD, add `--light-blue` to the convert step:
+```bash
+python scripts/convert_obj_to_usd.py --input assets/objects/box.obj --output assets/objects/box.usd --light-blue
+```
+Or use a custom color (RGB 0–1): `--color 0.68 0.85 1.0`
+
 <img src="fig/meshes/1.png" width="240" height="200" title="objpc1"> <img src="fig/meshes/2.png" width="240" height="200" title="objpc2"> <img src="fig/meshes/3.png" width="240" height="200" title="objpc3">
 
 ### **[Advanced]** Predicting grasps for objects from scene point clouds
@@ -242,6 +329,64 @@ Please see the following files for documentation on the formats we adopted:
 
 See the [GraspDataGen](https://github.com/NVlabs/GraspDataGen) package for Isaac Lab based grasp data generation in the above format.
 
+## LLM Tool-calling with GraspGen
+
+GraspGen can be deployed as a standalone ZMQ server, making it callable as a tool from LLM agents, remote robot controllers, or any application — without importing model code or needing a local GPU. See [client-server/README.md](client-server/README.md) for full documentation, protocol reference, and examples.
+
+```bash
+# Start the server (Docker):
+bash docker/run_server.sh $(pwd) --models /path/to/GraspGenModels
+
+# Call it from a client (Python — no CUDA required):
+python client-server/graspgen_client.py --mesh_file /path/to/mesh.obj --host localhost --port 5556
+```
+
+## Omniverse and USD Support
+
+GraspGen supports **USD** meshes (`.usd`, `.usda`, `.usdc`, `.usdz`) for inference and can write predicted grasps back into USD for **Omniverse** / Isaac Sim. A single USD can contain the object mesh, **`/world/grasps`** (pose Xforms only), and **`/world/grasps_visualization`** (same poses + gripper wireframes). Meshes are converted with [scene_synthesizer](https://github.com/NVlabs/scene_synthesizer). Commands for running on an example object [assets/objects/box.obj](assets/objects/box.obj):
+
+```bash
+# 1) OBJ → USD 
+python scripts/convert_obj_to_usd.py --input assets/objects/box.obj --output /tmp/box.usd
+
+# 2) Run inference, save grasps to YAML
+python scripts/demo_object_mesh.py --mesh_file /tmp/box.usd --mesh_scale 1.0 \
+  --gripper_config GRIPPER_CONFIG --output_file /tmp/box_grasps.yml --no-visualization --num_grasps 50
+
+# 3) Write grasps + grasps_visualization into the USD
+python scripts/save_grasps_to_usd.py --usd_file assets/objects/box.usd --grasps_yaml /tmp/box_grasps.yml \
+  --gripper_name robotiq_2f_140 --output assets/objects/box_with_grasps.usd
+```
+
+Optional: **`--wireframe_width W`** (default `0.001`), **`--no_visualization`** to skip wireframes. See [Inference Demos](#inference-demos) for other formats (`.obj`,`.pcd`.etc).
+
+### Running grasps in Isaac Sim (10 envs, play-to-grasp)
+
+You can generate a **sim USD** with up to 10 environments: each env has the object and one gripper at a predicted grasp pose. When you open this USD in **Omniverse / Isaac Sim** and press **Play**, the grippers close and grasp the object. A Robotiq 2F-85 gripper USD is included under `assets/bots/robotiq_2f_85.usd` (copied from [GraspDataGen](https://github.com/NVlabs/GraspDataGen)).
+
+**1. Run inference (max 10 grasps) and save YAML**
+
+```bash
+python scripts/demo_object_mesh.py --mesh_file /tmp/box.usd --mesh_scale 1.0 \
+  --gripper_config GRIPPER_CONFIG --output_file /tmp/box_grasps.yml --no-visualization --num_grasps 10
+```
+
+**2. Build the sim USD** (`box_with_grasps_sim.usd`)
+
+```bash
+python scripts/create_grasp_sim_usd.py --object_usd assets/objects/box.usd \
+  --grasps_yaml /tmp/box_grasps.yml --output assets/objects/box_with_grasps_sim.usd --num_envs 10
+```
+
+**3. Open in Isaac Sim and run the grasp script**
+
+- In **Isaac Sim**: **File → Open** and open `assets/objects/box_with_grasps_sim.usd`.
+- Press **Play** to start the simulation.
+- In **Window → Script Editor**, open and run `scripts/run_grasp_sim_omniverse.py`.  
+  This script registers a callback so that after a short delay the grippers move to the closed position and grasp the object.
+
+Options for `create_grasp_sim_usd.py`: **`--gripper_usd`** (default `assets/bots/robotiq_2f_85.usd`), **`--num_envs`** (default `10`), **`--env_spacing`** (default `0.6` m).
+
 ## FAQ
 
 ### How do I train for a new gripper?
@@ -295,12 +440,13 @@ For business inquiries, please submit the form [NVIDIA Research Licensing](https
 If you found this work to be useful, please considering citing:
 
 ```
-@article{murali2025graspgen,
-  title={GraspGen: A Diffusion-based Framework for 6-DOF Grasping with On-Generator Training},
-  author={Murali, Adithyavairavan and Sundaralingam, Balakumar and Chao, Yu-Wei and Yamada, Jun and Yuan, Wentao and Carlson, Mark and Ramos, Fabio and Birchfield, Stan and Fox, Dieter and Eppner, Clemens},
-  journal={arXiv preprint arXiv:2507.13097},
-  url={https://arxiv.org/abs/2507.13097},
-  year={2025},
+@inproceedings{murali2025graspgen,
+  title     = {GraspGen: A Diffusion-based Framework for 6-DOF Grasping with On-Generator Training},
+  author    = {Murali, Adithyavairavan and Sundaralingam, Balakumar and Chao, Yu-Wei and Yamada, Jun and Yuan, Wentao and Carlson, Mark and Ramos, Fabio and Birchfield, Stan and Fox, Dieter and Eppner, Clemens},
+  booktitle = {Proceedings of the IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2026},
+  publisher = {IEEE},
+  url       = {https://arxiv.org/abs/2507.13097}
 }
 ```
 
