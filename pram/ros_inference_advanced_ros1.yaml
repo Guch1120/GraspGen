@@ -1,0 +1,20 @@
+scene_topic: /hsrb/head_rgbd_sensor/depth_registered/rectified_points
+object_topic: /object_pointcloud
+gripper_config: GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml
+target_frame: base_link
+tf_timeout_sec: 0.2
+
+grasp_confidence_threshold: 0.5
+collision_threshold: 0.02
+table_clearance_threshold: 0.02
+support_plane_axis: 2
+support_plane_percentile: 3.0
+min_centrality_threshold: 0.15
+approach_corridor_radius: 0.03
+approach_corridor_length: 0.12
+surface_alignment_k_neighbors: 32
+
+score_weight_confidence: 0.5
+score_weight_centrality: 0.2
+score_weight_clearance: 0.2
+score_weight_surface_alignment: 0.1

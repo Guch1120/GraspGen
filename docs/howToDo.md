@@ -153,6 +153,42 @@ python3 scripts/ros_inference_advanced_HSR.py \
 - `~sync_queue_size`
 - `~mask_threshold`
 
+### F. HSR 用把持推論ノード (ROS1 Noetic)
+
+HSR 側でマスク済み点群をそのまま受けて再ランキング付き推論を行う場合は
+[scripts/ros_inference_advanced_ros1.py](/home/guch1/ssd_yamaguchi/HSR/graspGen/scripts/ros_inference_advanced_ros1.py)
+を使います。
+
+```bash
+source /opt/ros/noetic/setup.bash
+rosparam load pram/ros_inference_advanced_ros1.yaml /grasp_inference_node_advanced_ros1
+python3 scripts/ros_inference_advanced_ros1.py \
+  _scene_topic:=/hsrb/head_rgbd_sensor/depth_registered/rectified_points \
+  _object_topic:=/object_pointcloud \
+  _target_frame:=base_link
+```
+
+主な ROS1 パラメータ:
+
+- `~scene_topic`
+- `~object_topic`
+- `~gripper_config`
+- `~target_frame`
+- `~tf_timeout_sec`
+- `~grasp_confidence_threshold`
+- `~collision_threshold`
+- `~table_clearance_threshold`
+- `~support_plane_axis`
+- `~support_plane_percentile`
+- `~min_centrality_threshold`
+- `~approach_corridor_radius`
+- `~approach_corridor_length`
+- `~surface_alignment_k_neighbors`
+- `~score_weight_confidence`
+- `~score_weight_centrality`
+- `~score_weight_clearance`
+- `~score_weight_surface_alignment`
+
 
 ## 補足
 - **マウントパスについて**: Docker Compose ではモデルディレクトリは `/models` にマウントされます。そのため、スクリプトの引数も `/models/...` から始まるパスを指定してください。
