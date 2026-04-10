@@ -1,0 +1,58 @@
+x-graspgen-common: &graspgen-common
+  volumes:
+    - ${GRASP_GEN_CODE_DIR:-..}:/code
+    - ${MODELS_DIR:-../GraspGenModels}:/models
+    - ${GRASP_DATASET_DIR:-../GraspGenDataset}:/grasp_dataset
+    - ${OBJECT_DATASET_DIR:-../ObjectDataset}:/object_dataset
+    - ${RESULTS_DIR:-../results}:/results
+    - /tmp/.X11-unix:/tmp/.X11-unix
+    - ${HOME}/.Xauthority:/root/.Xauthority
+  environment:
+    NVIDIA_DISABLE_REQUIRE: "1"
+    NVIDIA_DRIVER_CAPABILITIES: all
+    DISPLAY: ${DISPLAY}
+    QT_X11_NO_MITSHM: "1"
+  network_mode: host
+  ipc: host
+  privileged: true
+  shm_size: 8gb
+  devices:
+    - /dev/dri:/dev/dri
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  stdin_open: true
+  tty: true
+
+services:
+  graspgen_ros2:
+    <<: *graspgen-common
+    image: graspgen:ros2
+    build:
+      context: ..
+      dockerfile: docker/graspgen_cuda121_ros2.dockerfile
+    command: >
+      /bin/bash -lc
+      "cd /code &&
+      (python -c 'import grasp_gen' 2>/dev/null || pip install -e .) &&
+      source /opt/ros/humble/setup.bash &&
+      bash"
+
+  graspgen_ros1:
+    <<: *graspgen-common
+    image: graspgen:ros1
+    build:
+      context: ..
+      dockerfile: docker/graspgen_cuda121_ros1.dockerfile
+      args:
+        CURL_INSECURE: ${CURL_INSECURE:-0}
+    command: >
+      /bin/bash -lc
+      "cd /code &&
+      (python -c 'import grasp_gen' 2>/dev/null || pip install -e .) &&
+      source /opt/ros/noetic/setup.bash &&
+      bash"

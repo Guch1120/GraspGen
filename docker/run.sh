@@ -157,5 +157,5 @@ docker run \
   --shm-size 40G \
   graspgen:latest \
   /bin/bash \
-  -c "cd /code/ && pip install -e . && bash" \
+  -c "git config --global --add safe.directory /code && cd /code && pip install -e . && bash"
 xhost -local:root

@@ -13,16 +13,44 @@ git clone https://huggingface.co/adithyamurali/GraspGenModels <path_to_models_re
 
 ## 2. Docker コンテナの起動
 
-ダウンロードしたモデルをマウントして、Docker コンテナを起動します。
-プロジェクトルートで以下のコマンドを実行してください（`docker-compose` ではなく `run.sh` を使用します）。
+このリポジトリでは `docker/docker-compose.yml` から ROS1 用または ROS2 用のどちらか一方のサービスを起動します。
+
+Compose ファイル:
+
+- [docker/docker-compose.yml](/home/robo25/yamaguchi/graspGen/docker/docker-compose.yml)
+
+サービス名:
+
+- `graspgen_ros1`
+- `graspgen_ros2`
+
+### 2-1. ROS2 イメージのビルド
 
 ```bash
-# クローンした GraspGen のルートディレクトリで実行
-# <path_to_models_repo> はモデルをクローンしたディレクトリへのパス
-bash docker/run.sh . --models GraspGenModels/
+bash docker/build.sh ros2
 ```
 
-実行後、コンテナ内のシェルに入ります。
+### 2-2. ROS1 イメージのビルド
+
+```bash
+CURL_INSECURE=1 bash docker/build.sh ros1
+```
+
+`CURL_INSECURE=1` は自己署名証明書環境で必要な回避策です。通常環境では外してください。
+
+### 2-3. ROS2 コンテナの起動
+
+```bash
+docker compose -f docker/docker-compose.yml up --build graspgen_ros2
+```
+
+### 2-4. ROS1 コンテナの起動
+
+```bash
+docker compose -f docker/docker-compose.yml up --build graspgen_ros1
+```
+
+実行後、対象コンテナ内のシェルに入ります。
 
 ## 3. MeshCat サーバーの起動 (可視化用)
 
@@ -41,7 +69,7 @@ MeshCat サーバーを起動したまま、**別のターミナル**を開き�
 1. **コンテナIDの確認**:
    ```bash
    docker ps
-   # "graspgen:latest" イメージのコンテナID (例: a1b2c3d4e5) を確認
+   # graspgen:ros2 または graspgen:ros1 のコンテナIDを確認
    ```
 
 2. **コンテナへの接続**:
@@ -49,7 +77,18 @@ MeshCat サーバーを起動したまま、**別のターミナル**を開き�
    docker exec -it <コンテナID> bash
    ```
 
-3. **推論スクリプトの実行**:
+3. **環境読み込み**:
+   ROS2 コンテナ:
+   ```bash
+   source /opt/ros/humble/setup.bash
+   ```
+
+   ROS1 コンテナ:
+   ```bash
+   source /opt/ros/noetic/setup.bash
+   ```
+
+4. **推論スクリプトの実行**:
    コンテナ内で以下のコマンドを実行します。
 
 ### A. オブジェクト点群 (JSON) の場合
@@ -87,9 +126,36 @@ python3 scripts/ros_inference.py --ros-args \
     -p object_topic:=/yolov8_seg_node/result_cloud
 ```
 
+再ランキング版を使う場合:
+
+```bash
+python3 scripts/ros_inference_advanced.py --ros-args --params-file pram/ros_inference_advanced.yaml
+```
+
+### E. HSR 用マスク点群生成ノード (ROS1 Noetic)
+
+HSR 側では [scripts/ros_inference_advanced_HSR.py](/home/robo25/yamaguchi/graspGen/scripts/ros_inference_advanced_HSR.py) を使います。
+
+```bash
+source /opt/ros/noetic/setup.bash
+python3 scripts/ros_inference_advanced_HSR.py \
+  _pointcloud_topic:=/hsrb/head_rgbd_sensor/depth_registered/rectified_points \
+  _mask_topic:=/sam/mask \
+  _output_topic:=/object_pointcloud
+```
+
+主な ROS1 パラメータ:
+
+- `~pointcloud_topic`
+- `~mask_topic`
+- `~output_topic`
+- `~sync_slop`
+- `~sync_queue_size`
+- `~mask_threshold`
+
 
 ## 補足
-- **マウントパスについて**: `run.sh` を使用した場合、モデルディレクトリは `/models` にマウントされます。そのため、スクリプトの引数も `/models/...` から始まるパスを指定してください。
+- **マウントパスについて**: Docker Compose ではモデルディレクトリは `/models` にマウントされます。そのため、スクリプトの引数も `/models/...` から始まるパスを指定してください。
 - **グリッパーの変更**: `--gripper_config` の引数を `/models/checkpoints/` 内にある他の `.yml` ファイル（例: `graspgen_franka_panda.yml`）に変更することで、異なるロボットハンドでの推論が可能です。
 - **詳細なオプション**: 各スクリプトに `--help` を付けて実行することで、閾値 (`--grasp_threshold`) や生成数 (`--num_grasps`) などの詳細設定を確認できます。
 ## 5. 実機導入へのステップ (RealSense + YOLOv8)
@@ -118,7 +184,7 @@ with open("test_input.json", "w") as f:
 
 #### GraspGen 側での単発テスト
 保存した `test_input.json` を Docker から見える場所に配置し、手順 4-A と同様に実行します。
-
+q
 ### ステップ 2: 実装のポイント
 - **外れ値除去 (Outlier Removal):** 
   RealSense の点群はノイズが多いため、推論前に必ず `point_cloud_outlier_removal` を適用してください。
@@ -135,3 +201,101 @@ with open("test_input.json", "w") as f:
    - 推論結果を `geometry_msgs/PoseArray` 等で返す。
 2. **Control Node (MoveIt2):** 
    - 推論サーバを呼び出し、得られたポーズへ軌道計画・実行。
+
+
+### graspgen入出力トピック名と設定箇所
+- scene 入力: /camera/camera/depth/color/points
+- object 入力: /yolov8_seg_node/result_cloud
+- best grasp 出力: /grasp/best_pose
+- marker 出力: /grasp_markers
+定義箇所は scripts/ros_inference_advanced.py と launch/grasp_inference.launch.py
+
+TF 名の指定は今は target_frame パラメータです。デフォルトは base_link \
+指定している箇所は scripts/ros_inference_advanced.py の declare_parameter('target_frame', 'base_link') とlaunch側の launch/grasp_inference.launch.py \
+実際の変換は lookup_transform(self.target_frame, source_frame, ...) で引いている．
+
+実行コマンドは
+```bash
+python3 scripts/ros_inference_advanced.py --ros-args --params-file pram/ros_inference_advanced.yaml
+```
+
+launch を使うなら
+```bash
+python3 launch/grasp_inference.launch.py
+```
+
+設定ファイル
+実行時パラメータは```pram/ros_inference_advanced.yaml```
+
+主な設定項目:
+- scene_topic
+- object_topic
+- gripper_config
+- target_frame
+- tf_timeout_sec
+- grasp_confidence_threshold
+- collision_threshold
+- table_clearance_threshold
+- support_plane_axis
+- support_plane_percentile
+- min_centrality_threshold
+- approach_corridor_radius
+- approach_corridor_length
+- surface_alignment_k_neighbors
+- score_weight_confidence
+- score_weight_centrality
+- score_weight_clearance
+- score_weight_surface_alignment
+
+入出力トピック \
+GraspGen ROS2 ノードが使う topic はこれです。
+
+入力:
+- scene 点群: /camera/camera/depth/color/points
+- object 点群: /yolov8_seg_node/result_cloud
+
+出力:
+- 最良把持姿勢: /grasp/best_pose
+- 可視化マーカー: /grasp_markers
+
+型:
+- 入力: sensor_msgs/msg/PointCloud2
+- /grasp/best_pose: geometry_msgs/msg/PoseStamped
+- /grasp_markers: visualization_msgs/msg/MarkerArray
+
+TF
+TF は source_frame -> target_frame を引いて使う \
+今の基準フレームは target_frame: base_link
+- カメラ点群は msg.header.frame_id から base_link へ変換
+- 推論後の grasp も base_link 基準で評価
+- /grasp/best_pose も base_link で publish
+
+TF 関連パラメータ:
+- target_frame: base_link
+- tf_timeout_sec: 0.2
+
+
+
+#### 動作確認コマンド例
+
+ROS2 側で確認:
+```bash
+ros2 topic list
+ros2 topic echo /grasp/best_pose
+ros2 topic echo /grasp_markers
+ros2 param dump /grasp_inference_node_advanced
+ros2 run tf2_ros tf2_echo base_link <camera_frame> #tf確認するなら
+```
+
+ROS1 側で確認:
+```bash
+rostopic list
+rostopic echo /object_pointcloud
+rostopic info /object_pointcloud
+```
+
+コンテナの起動状況:
+```bash
+docker compose -f docker/docker-compose.yml ps
+docker ps
+```

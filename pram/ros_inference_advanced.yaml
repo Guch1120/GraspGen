@@ -1,0 +1,22 @@
+/**:
+  ros__parameters:
+    scene_topic: /camera/camera/depth/color/points # 衝突判定するための物体周りの点群トピック
+    object_topic: /yolov8_seg_node/result_cloud # 全体からオブジェクトをセグメントした点群トピック
+    gripper_config: GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml # グリッパ設定のファイル
+    target_frame: base_link # 基準になるTFフレーム名
+    tf_timeout_sec: 0.2 # TFのタイムアウト時間
+
+    grasp_confidence_threshold: 0.5 # グリップの信頼度の閾値
+    collision_threshold: 0.02 # 衝突判定の距離の閾値
+    table_clearance_threshold: 0.02 # テーブルからのクリアランスの閾値
+    support_plane_axis: 2
+    support_plane_percentile: 3.0
+    min_centrality_threshold: 0.15
+    approach_corridor_radius: 0.03
+    approach_corridor_length: 0.12
+    surface_alignment_k_neighbors: 32
+
+    score_weight_confidence: 0.5
+    score_weight_centrality: 0.2
+    score_weight_clearance: 0.2
+    score_weight_surface_alignment: 0.1

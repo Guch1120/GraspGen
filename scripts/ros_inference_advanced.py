@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import os
 import struct
 import sys
 import time
@@ -8,10 +9,13 @@ import numpy as np
 import rclpy
 import torch
 import trimesh.transformations as tra
+from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.time import Time
 from sensor_msgs.msg import PointCloud2, PointField
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import PoseStamped
+from tf2_ros import Buffer, TransformException, TransformListener
 
 # GraspGen imports
 from grasp_gen.grasp_server import GraspGenSampler, load_grasp_cfg
@@ -24,6 +28,15 @@ from grasp_gen.utils.meshcat_utils import (
 from grasp_gen.utils.point_cloud_utils import (
     point_cloud_outlier_removal_with_color,
     filter_colliding_grasps,
+)
+from grasp_gen.utils.grasp_ranking import (
+    compute_approach_clearance_scores,
+    compute_centrality_scores,
+    compute_surface_alignment_scores,
+    compute_total_scores,
+    estimate_support_plane_height,
+    filter_by_centrality,
+    filter_by_support_plane_clearance,
 )
 from grasp_gen.robot import get_gripper_info
 
@@ -177,6 +190,14 @@ def _get_struct_fmt(is_bigendian, fields, field_names=None):
     return 'fff' 
 
 
+def transform_stamped_to_matrix(transform_stamped):
+    translation = transform_stamped.transform.translation
+    rotation = transform_stamped.transform.rotation
+    matrix = tra.quaternion_matrix([rotation.x, rotation.y, rotation.z, rotation.w])
+    matrix[:3, 3] = [translation.x, translation.y, translation.z]
+    return matrix
+
+
 class GraspInferenceNodeAdvanced(Node):
     def __init__(self):
         super().__init__('grasp_inference_node_advanced')
@@ -185,13 +206,44 @@ class GraspInferenceNodeAdvanced(Node):
         self.declare_parameter('scene_topic', '/camera/camera/depth/color/points')
         self.declare_parameter('object_topic', '/yolov8_seg_node/result_cloud') 
         self.declare_parameter('gripper_config', 'GraspGenModels/checkpoints/graspgen_robotiq_2f_140.yml')
-        
+        self.declare_parameter('target_frame', 'base_link')
+        self.declare_parameter('tf_timeout_sec', 0.2)
+        self.declare_parameter('grasp_confidence_threshold', 0.5)
+        self.declare_parameter('collision_threshold', 0.02)
+        self.declare_parameter('table_clearance_threshold', 0.02)
+        self.declare_parameter('support_plane_axis', 2)
+        self.declare_parameter('support_plane_percentile', 3.0)
+        self.declare_parameter('min_centrality_threshold', 0.15)
+        self.declare_parameter('approach_corridor_radius', 0.03)
+        self.declare_parameter('approach_corridor_length', 0.12)
+        self.declare_parameter('surface_alignment_k_neighbors', 32)
+        self.declare_parameter('score_weight_confidence', 0.5)
+        self.declare_parameter('score_weight_centrality', 0.2)
+        self.declare_parameter('score_weight_clearance', 0.2)
+        self.declare_parameter('score_weight_surface_alignment', 0.1)
+
         self.scene_topic = self.get_parameter('scene_topic').value
         self.object_topic = self.get_parameter('object_topic').value
         gripper_config_path = self.get_parameter('gripper_config').value
+        self.target_frame = self.get_parameter('target_frame').value
+        self.tf_timeout_sec = float(self.get_parameter('tf_timeout_sec').value)
+        self.grasp_confidence_threshold = float(self.get_parameter('grasp_confidence_threshold').value)
+        self.collision_threshold = float(self.get_parameter('collision_threshold').value)
+        self.table_clearance_threshold = float(self.get_parameter('table_clearance_threshold').value)
+        self.support_plane_axis = int(self.get_parameter('support_plane_axis').value)
+        self.support_plane_percentile = float(self.get_parameter('support_plane_percentile').value)
+        self.min_centrality_threshold = float(self.get_parameter('min_centrality_threshold').value)
+        self.approach_corridor_radius = float(self.get_parameter('approach_corridor_radius').value)
+        self.approach_corridor_length = float(self.get_parameter('approach_corridor_length').value)
+        self.surface_alignment_k_neighbors = int(self.get_parameter('surface_alignment_k_neighbors').value)
+        self.score_weight_confidence = float(self.get_parameter('score_weight_confidence').value)
+        self.score_weight_centrality = float(self.get_parameter('score_weight_centrality').value)
+        self.score_weight_clearance = float(self.get_parameter('score_weight_clearance').value)
+        self.score_weight_surface_alignment = float(self.get_parameter('score_weight_surface_alignment').value)
 
         self.get_logger().info(f"Scene Topic: {self.scene_topic}")
         self.get_logger().info(f"Object Topic: {self.object_topic}")
+        self.get_logger().info(f"Target Frame: {self.target_frame}")
 
         # --- Subscriptions ---
         self.scene_sub = self.create_subscription(
@@ -210,6 +262,10 @@ class GraspInferenceNodeAdvanced(Node):
         # --- Publishers ---
         self.marker_pub = self.create_publisher(MarkerArray, '/grasp_markers', 1)
         self.best_grasp_pub = self.create_publisher(PoseStamped, '/grasp/best_pose', 1)
+
+        # --- TF ---
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # --- Validations ---
         if not os.path.exists(gripper_config_path):
@@ -251,12 +307,45 @@ class GraspInferenceNodeAdvanced(Node):
         vis = meshcat.Visualizer(zmq_url=zmq_url)
         return vis
 
+    def lookup_transform_matrix(self, source_frame):
+        if source_frame == self.target_frame:
+            return np.eye(4, dtype=np.float64)
+        try:
+            transform_stamped = self.tf_buffer.lookup_transform(
+                self.target_frame,
+                source_frame,
+                Time(),
+                timeout=Duration(seconds=self.tf_timeout_sec),
+            )
+        except TransformException as exc:
+            self.get_logger().warn(
+                f"Failed to lookup TF {source_frame} -> {self.target_frame}: {exc}"
+            )
+            return None
+        return transform_stamped_to_matrix(transform_stamped)
+
+    def transform_points_to_target_frame(self, points, source_frame):
+        transform_matrix = self.lookup_transform_matrix(source_frame)
+        if transform_matrix is None:
+            return None
+        return tra.transform_points(points, transform_matrix)
+
+    def transform_grasps_to_target_frame(self, grasps, source_frame):
+        transform_matrix = self.lookup_transform_matrix(source_frame)
+        if transform_matrix is None:
+            return None
+        return np.asarray([transform_matrix @ grasp for grasp in grasps], dtype=np.float32)
+
     def listener_callback_scene(self, msg):
         """Buffer the latest scene point cloud for collision checking."""
         # self.get_logger().info(f"Received scene pointcloud: {msg.width * msg.height} points")
         points, colors = read_points(msg)
         
         if len(points) == 0:
+            return
+
+        transformed_points = self.transform_points_to_target_frame(points, msg.header.frame_id)
+        if transformed_points is None:
             return
 
         # Simple downsampling for storage (optional, to save memory/speed)
@@ -266,7 +355,7 @@ class GraspInferenceNodeAdvanced(Node):
         #     points = points[idx]
         #     if colors is not None: colors = colors[idx]
             
-        self.latest_scene_pc = points
+        self.latest_scene_pc = transformed_points
         self.latest_scene_color = colors
         
         # Visualize scene in MeshCat immediately?
@@ -280,6 +369,11 @@ class GraspInferenceNodeAdvanced(Node):
         obj_points, obj_colors = read_points(msg, skip_nans=True)
         if len(obj_points) == 0:
             self.get_logger().warn("Empty object point cloud received.")
+            return
+
+        obj_points = self.transform_points_to_target_frame(obj_points, msg.header.frame_id)
+        if obj_points is None:
+            self.get_logger().warn("Skipping object cloud because TF to target frame is unavailable.")
             return
 
         # Handle NaNs if custom parser didn't
@@ -321,7 +415,7 @@ class GraspInferenceNodeAdvanced(Node):
         grasps, grasp_conf = GraspGenSampler.run_inference(
             obj_pc_clean,
             self.grasp_sampler,
-            grasp_threshold=0.5, # Configurable
+            grasp_threshold=self.grasp_confidence_threshold,
             num_grasps=100,
             max_tries=2
         )
@@ -336,19 +430,11 @@ class GraspInferenceNodeAdvanced(Node):
         grasps = grasps.cpu().numpy()
         grasps[:, 3, 3] = 1 # Homogeneous fix
         
-        # Scores for color
-        scores = get_color_from_score(grasp_conf, use_255_scale=True)
-        
-        # Center the visual logic
-        # For visualization, we need to handle coordinates correctly.
-        # The grasps are in the same frame as the input point cloud (Camera frame).
-        
-        # --- 3. Collision Filtering (if scene available) ---
+        # --- 3. Hard Filtering ---
         final_grasps = grasps
-        final_scores = scores
         final_conf = grasp_conf
+        final_components = {}
 
-        
         if self.latest_scene_pc is not None:
             self.get_logger().info("Checking collisions...")
             # Use only a subset of scene for speed
@@ -361,14 +447,83 @@ class GraspInferenceNodeAdvanced(Node):
                 scene_pc=scene_check,
                 grasp_poses=grasps,
                 gripper_collision_mesh=self.gripper_collision_mesh,
-                collision_threshold=0.02 # TODO parameterize
+                collision_threshold=self.collision_threshold
             )
             final_grasps = grasps[mask]
-            final_scores = scores[mask]
             final_conf = grasp_conf[mask]
             self.get_logger().info(f"Collision check: {len(grasps)} -> {len(final_grasps)} valid grasps.")
-        
-        # --- 4. Visualize in MeshCat ---
+
+            if len(final_grasps) > 0:
+                plane_height = estimate_support_plane_height(
+                    scene_check,
+                    axis=self.support_plane_axis,
+                    percentile=self.support_plane_percentile,
+                )
+                support_mask = filter_by_support_plane_clearance(
+                    final_grasps,
+                    plane_height=plane_height,
+                    min_clearance=self.table_clearance_threshold,
+                    axis=self.support_plane_axis,
+                )
+                self.get_logger().info(
+                    f"Support clearance filter: {len(final_grasps)} -> {int(np.sum(support_mask))} valid grasps "
+                    f"(plane={plane_height:.3f}, axis={self.support_plane_axis})"
+                )
+                final_grasps = final_grasps[support_mask]
+                final_conf = final_conf[support_mask]
+
+        if len(final_grasps) > 0:
+            centrality_mask = filter_by_centrality(
+                obj_pc_clean_np,
+                final_grasps,
+                min_centrality=self.min_centrality_threshold,
+            )
+            self.get_logger().info(
+                f"Centrality filter: {len(final_grasps)} -> {int(np.sum(centrality_mask))} valid grasps."
+            )
+            final_grasps = final_grasps[centrality_mask]
+            final_conf = final_conf[centrality_mask]
+
+        if len(final_grasps) == 0:
+            self.get_logger().warn("All grasps were removed by hard filters.")
+            return
+
+        # --- 4. Soft Scoring ---
+        centrality_scores = compute_centrality_scores(obj_pc_clean_np, final_grasps)
+        environment_pc = (
+            self.latest_scene_pc if self.latest_scene_pc is not None else obj_pc_clean_np
+        )
+        clearance_scores = compute_approach_clearance_scores(
+            environment_pc=environment_pc,
+            grasp_poses=final_grasps,
+            corridor_radius=self.approach_corridor_radius,
+            corridor_length=self.approach_corridor_length,
+        )
+        surface_alignment_scores = compute_surface_alignment_scores(
+            object_pc=obj_pc_clean_np,
+            grasp_poses=final_grasps,
+            k_neighbors=self.surface_alignment_k_neighbors,
+        )
+        total_scores = compute_total_scores(
+            confidence=final_conf,
+            centrality=centrality_scores,
+            clearance=clearance_scores,
+            surface_alignment=surface_alignment_scores,
+            weight_confidence=self.score_weight_confidence,
+            weight_centrality=self.score_weight_centrality,
+            weight_clearance=self.score_weight_clearance,
+            weight_surface_alignment=self.score_weight_surface_alignment,
+        )
+        final_scores = get_color_from_score(total_scores, use_255_scale=True)
+        final_components = {
+            "confidence": final_conf,
+            "centrality": centrality_scores,
+            "clearance": clearance_scores,
+            "surface_alignment": surface_alignment_scores,
+            "total": total_scores,
+        }
+
+        # --- 5. Visualize in MeshCat ---
         # Clear old grasps?
         # vis["grasps"].delete() # Depends on meshcat structure
         
@@ -383,20 +538,28 @@ class GraspInferenceNodeAdvanced(Node):
                 gripper_name=self.gripper_name
             )
 
-        # --- 5. Publish Markers to ROS ---
-        self.publish_markers(final_grasps, final_scores, msg.header.frame_id)
+        # --- 6. Publish Markers to ROS ---
+        self.publish_markers(final_grasps, final_scores, self.target_frame)
 
-        # --- 6. Select and Publish Best Grasp ---
+        # --- 7. Select and Publish Best Grasp ---
         if len(final_grasps) > 0:
-            # Find index of max score using raw confidence (final_conf)
-            best_idx = np.argmax(final_conf)
+            best_idx = int(np.argmax(final_components["total"]))
             best_grasp = final_grasps[best_idx]
-            best_score = final_conf[best_idx]
+            best_score = final_components["total"][best_idx]
             
-            self.get_logger().info(f"Selected Best Grasp: Score {best_score:.3f}")
+            self.get_logger().info(
+                "Selected Best Grasp: total=%.3f conf=%.3f center=%.3f clear=%.3f align=%.3f"
+                % (
+                    best_score,
+                    final_components["confidence"][best_idx],
+                    final_components["centrality"][best_idx],
+                    final_components["clearance"][best_idx],
+                    final_components["surface_alignment"][best_idx],
+                )
+            )
             
             # Publish PoseStamped
-            self.publish_best_grasp(best_grasp, msg.header.frame_id)
+            self.publish_best_grasp(best_grasp, self.target_frame)
             
             # Visualize Best Grasp Specially (Green)
             visualize_grasp(
@@ -471,8 +634,6 @@ class GraspInferenceNodeAdvanced(Node):
             marker_array.markers.append(marker)
             
         self.marker_pub.publish(marker_array)
-
-import os
 def main(args=None):
     rclpy.init(args=args)
     node = GraspInferenceNodeAdvanced()
